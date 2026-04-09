@@ -70,28 +70,27 @@ def sign_clob_auth(private_key: str) -> tuple[str, str, str, str]:
     return address, sig_hex, timestamp, str(nonce)
 
 
-def post_json(url: str, headers: dict) -> tuple[int, dict]:
-    """POST with stdlib urllib."""
-    headers["User-Agent"] = "Mozilla/5.0 polymarket-bot/0.1"
-    headers["Accept"]     = "application/json"
-    req = urllib.request.Request(url, data=b"{}", headers=headers, method="POST")
+def _make_request(url: str, headers: dict, method: str, data: bytes | None = None) -> tuple[int, dict]:
+    """HTTP request preserving exact header casing (urllib.capitalize() breaks POLY-* headers)."""
+    req = urllib.request.Request(url, data=data, method=method)
+    # add_unredirected_header bypasses capitalize()
+    for k, v in headers.items():
+        req.add_unredirected_header(k, v)
+    req.add_unredirected_header("User-Agent", "Mozilla/5.0 polymarket-bot/0.1")
+    req.add_unredirected_header("Accept", "application/json")
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             return resp.status, json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
         return e.code, {"error": e.read().decode()}
+
+
+def post_json(url: str, headers: dict) -> tuple[int, dict]:
+    return _make_request(url, headers, "POST", data=b"{}")
 
 
 def get_json(url: str, headers: dict) -> tuple[int, dict]:
-    """GET with stdlib urllib."""
-    headers["User-Agent"] = "Mozilla/5.0 polymarket-bot/0.1"
-    headers["Accept"]     = "application/json"
-    req = urllib.request.Request(url, headers=headers, method="GET")
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return resp.status, json.loads(resp.read().decode())
-    except urllib.error.HTTPError as e:
-        return e.code, {"error": e.read().decode()}
+    return _make_request(url, headers, "GET")
 
 
 def main():
