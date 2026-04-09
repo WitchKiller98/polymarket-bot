@@ -76,6 +76,8 @@ def make_l1_headers(private_key: str) -> dict:
 
 def post_json(url: str, headers: dict) -> tuple[int, dict]:
     """POST with stdlib only — no requests/aiohttp needed."""
+    headers["User-Agent"] = "Mozilla/5.0 (X11; Linux x86_64) polymarket-bot/0.1"
+    headers["Accept"]     = "application/json"
     req = urllib.request.Request(
         url,
         data=b"{}",
