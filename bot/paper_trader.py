@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 
 import aiosqlite
@@ -93,8 +94,6 @@ class PaperLedger:
 
     async def snapshot_balance(self, balance: float, note: str = "") -> None:
         assert self._db is not None
-        import time
-
         await self._db.execute(
             "INSERT INTO balance_snapshots (timestamp, balance_usd, note) VALUES (?, ?, ?)",
             (time.time(), balance, note),
@@ -112,8 +111,6 @@ class PaperLedger:
     async def trade_count_today(self) -> int:
         """Count trades from the last 24 hours."""
         assert self._db is not None
-        import time
-
         cutoff = time.time() - 86400
         async with self._db.execute(
             "SELECT COUNT(*) FROM trades WHERE timestamp >= ?", (cutoff,)

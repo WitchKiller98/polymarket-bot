@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as _dt
 import logging
+import random
 import time
 
 from bot.config import Credentials, TradingConfig
@@ -17,7 +19,7 @@ from bot.executor import (
 from bot.logger import setup_logging
 from bot.paper_trader import PaperLedger
 from bot.polymarket_client import PolymarketClient
-from bot.position_sizer import PositionSizer
+from bot.position_sizer import PositionSizer, SizeResult
 from bot.price_feed import PriceFeed, PriceUpdate
 from bot.risk_manager import RiskManager
 from bot.telegram_notifier import TelegramNotifier
@@ -48,6 +50,7 @@ class ArbitrageBot:
 
         # Runtime
         self._portfolio_usd: float = 0.0
+        self._initial_paper_balance: float = 10_000.0
         self._running = False
         self._scan_interval = 2.0  # seconds between edge scans
 
@@ -62,13 +65,12 @@ class ArbitrageBot:
         # Initialise portfolio balance
         self._portfolio_usd = await self._poly.get_usdc_balance()
         if self._portfolio_usd <= 0 and self._live:
-            log.warning("Zero USDC balance – falling back to $10 000 paper balance")
-            self._portfolio_usd = 10_000.0
+            log.warning("Zero USDC balance – falling back to $10,000 paper balance")
+            self._portfolio_usd = self._initial_paper_balance
 
         if not self._live:
-            # Paper mode starts with a simulated $10k if no real balance
             if self._portfolio_usd <= 0:
-                self._portfolio_usd = 10_000.0
+                self._portfolio_usd = self._initial_paper_balance
 
         log.info("Starting portfolio: $%.2f", self._portfolio_usd)
 
@@ -76,7 +78,7 @@ class ArbitrageBot:
         self._risk = RiskManager(self._cfg, self._notifier, self._portfolio_usd)
 
         if self._live:
-            backend = LiveBackend(self._poly, self._notifier)
+            backend: LiveBackend | PaperBackend = LiveBackend(self._poly, self._notifier)
         else:
             backend = PaperBackend(self._notifier)
         self._executor = Executor(self._cfg, backend, self._notifier)
@@ -99,12 +101,14 @@ class ArbitrageBot:
 
         self._running = True
 
-        # Launch concurrent tasks
+        # Launch concurrent tasks – feed.run() is included directly so
+        # exceptions propagate properly via gather.
         await asyncio.gather(
-            self._feed.start(),
+            self._feed.run_forever(),
             self._market_refresh_loop(),
             self._scan_loop(),
             self._heartbeat_loop(),
+            self._daily_reset_loop(),
         )
 
     async def stop(self) -> None:
@@ -134,6 +138,9 @@ class ArbitrageBot:
                 await self._poly.fetch_markets()
             except Exception:
                 log.exception("Market refresh error")
+                await self._notifier.alert(
+                    "ERROR", "Market refresh failed – see logs."
+                )
             await asyncio.sleep(60)
 
     # ------------------------------------------------------------------
@@ -149,6 +156,9 @@ class ArbitrageBot:
                 await self._scan_once()
             except Exception:
                 log.exception("Scan loop error")
+                await self._notifier.alert(
+                    "ERROR", "Scan loop exception – see logs."
+                )
             await asyncio.sleep(self._scan_interval)
 
     async def _scan_once(self) -> None:
@@ -190,9 +200,8 @@ class ArbitrageBot:
         if fresh_balance > 0:
             self._portfolio_usd = fresh_balance
         elif not self._live and self._ledger:
-            # Paper mode: track simulated P&L
             pnl = await self._ledger.total_pnl()
-            self._portfolio_usd = 10_000.0 + pnl
+            self._portfolio_usd = self._initial_paper_balance + pnl
 
         size = self._sizer.calculate(best, self._portfolio_usd)
         if size.size_usd <= 0:
@@ -202,19 +211,21 @@ class ArbitrageBot:
         # Execute
         rec: TradeRecord = await self._executor.execute(best, size)
 
-        # Record in ledger (paper mode)
+        # Record in ledger and settle immediately for paper mode
+        trade_id: int | None = None
         if self._ledger and rec.paper:
-            await self._ledger.record_trade(rec)
+            trade_id = await self._ledger.record_trade(rec)
 
-        # Simulate PnL for risk tracking
-        # In paper mode, we simulate a binary outcome based on edge
+        # Compute and record PnL
         if rec.success:
             simulated_pnl = self._simulate_pnl(best, size)
             new_balance = self._portfolio_usd + simulated_pnl
             await self._risk.record_trade(simulated_pnl, new_balance)
             self._portfolio_usd = new_balance
 
-            if self._ledger:
+            # Settle paper trade in the ledger
+            if self._ledger and trade_id is not None:
+                await self._ledger.settle_trade(trade_id, simulated_pnl)
                 await self._ledger.snapshot_balance(new_balance, "post_trade")
 
     @staticmethod
@@ -226,8 +237,6 @@ class ArbitrageBot:
         Win: (1 / entry_price - 1) * size   (binary pays $1)
         Loss: -size
         """
-        import random
-
         if random.random() < signal.model_prob:
             return size.size_usd * (1.0 / signal.entry_price - 1.0)
         return -size.size_usd
@@ -261,3 +270,30 @@ class ArbitrageBot:
         )
         await self._notifier.alert("Hourly Heartbeat", msg)
         log.info("Heartbeat sent")
+
+    # ------------------------------------------------------------------
+    # Daily reset (at UTC midnight)
+    # ------------------------------------------------------------------
+
+    async def _daily_reset_loop(self) -> None:
+        """Reset risk counters at the start of each UTC day."""
+        while self._running:
+            now = _dt.datetime.now(_dt.timezone.utc)
+            tomorrow = (now + _dt.timedelta(days=1)).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            seconds_until = (tomorrow - now).total_seconds()
+            await asyncio.sleep(seconds_until)
+
+            if not self._running or self._risk is None:
+                break
+
+            fresh = await self._poly.get_usdc_balance()
+            if fresh > 0:
+                self._portfolio_usd = fresh
+            await self._risk.reset_daily(self._portfolio_usd)
+            await self._notifier.alert(
+                "Daily Reset",
+                f"Risk counters reset. New day-start balance: ${self._portfolio_usd:,.2f}",
+            )
+            log.info("Daily reset complete")

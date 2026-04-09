@@ -40,10 +40,11 @@ class TelegramNotifier:
         return self._session
 
     async def send(self, text: str) -> None:
-        """Send *text* to the configured Telegram chat (Markdown V2 safe)."""
+        """Send *text* to the configured Telegram chat (HTML parse mode)."""
         async with self._lock:
-            now = asyncio.get_event_loop().time()
-            wait = self._MIN_INTERVAL - (now - self._last_send)
+            loop = asyncio.get_running_loop()
+            now = loop.time()
+            wait = _MIN_INTERVAL - (now - self._last_send)
             if wait > 0:
                 await asyncio.sleep(wait)
 
@@ -61,7 +62,7 @@ class TelegramNotifier:
             except Exception:
                 log.exception("Failed to send Telegram message")
             finally:
-                self._last_send = asyncio.get_event_loop().time()
+                self._last_send = asyncio.get_running_loop().time()
 
     async def alert(self, title: str, body: str) -> None:
         """Convenience wrapper that formats title + body."""

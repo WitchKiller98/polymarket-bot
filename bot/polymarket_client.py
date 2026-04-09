@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as _dt
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import aiohttp
@@ -175,22 +176,12 @@ class PolymarketClient:
             mkt = self._markets.get(condition_id)
             if mkt is None:
                 return None
+            updates: dict[str, Any] = {"updated_at": time.monotonic()}
             if bids:
-                mkt = PolyMarket(
-                    **{
-                        **mkt.__dict__,
-                        "best_bid_yes": float(bids[0].get("price", mkt.best_bid_yes)),
-                        "updated_at": time.monotonic(),
-                    }
-                )
+                updates["best_bid_yes"] = float(bids[0].get("price", mkt.best_bid_yes))
             if asks:
-                mkt = PolyMarket(
-                    **{
-                        **mkt.__dict__,
-                        "best_ask_yes": float(asks[0].get("price", mkt.best_ask_yes)),
-                        "updated_at": time.monotonic(),
-                    }
-                )
+                updates["best_ask_yes"] = float(asks[0].get("price", mkt.best_ask_yes))
+            mkt = replace(mkt, **updates)
             self._markets[condition_id] = mkt
         return mkt
 
@@ -299,8 +290,6 @@ class PolymarketClient:
             return 15
         end_date = market.get("end_date_iso")
         if end_date:
-            import datetime as _dt
-
             try:
                 end = _dt.datetime.fromisoformat(end_date.replace("Z", "+00:00"))
                 now = _dt.datetime.now(_dt.timezone.utc)

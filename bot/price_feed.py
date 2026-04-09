@@ -62,7 +62,13 @@ class PriceFeed:
             return None  # stale – treat as unavailable
         return p
 
+    async def run_forever(self) -> None:
+        """Awaitable entry point – use in asyncio.gather() for proper lifecycle."""
+        self._running = True
+        await self._run()
+
     async def start(self) -> None:
+        """Fire-and-forget variant (creates a background task)."""
         self._running = True
         self._task = asyncio.create_task(self._run(), name="price_feed")
 
@@ -161,4 +167,4 @@ class PriceFeed:
         self._prices[symbol] = update
 
         if self._on_price is not None:
-            asyncio.get_event_loop().create_task(self._on_price(update))
+            asyncio.get_running_loop().create_task(self._on_price(update))

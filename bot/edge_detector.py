@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 from dataclasses import dataclass
 
@@ -166,8 +167,6 @@ class EdgeDetector:
 
         # Logistic mapping: ret → probability in (0, 1)
         # Scale factor tuned so a 0.5 % 30-s move maps to ~0.65 prob
-        import math
-
         scale = 130.0  # sensitivity knob
         prob = 1.0 / (1.0 + math.exp(-scale * ret))
 
