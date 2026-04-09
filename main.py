@@ -80,9 +80,18 @@ def main() -> None:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
+    _shutting_down = False
+
     # Graceful shutdown on SIGINT / SIGTERM
     def _shutdown(sig: signal.Signals) -> None:
+        nonlocal _shutting_down
+        if _shutting_down:
+            return  # prevent re-entry from repeated signals
+        _shutting_down = True
         print(f"\nReceived {sig.name}, shutting down…")
+        # Remove handlers to prevent re-entry
+        for s in (signal.SIGINT, signal.SIGTERM):
+            loop.remove_signal_handler(s)
         loop.create_task(bot.stop())
 
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -91,7 +100,13 @@ def main() -> None:
     try:
         loop.run_until_complete(bot.start())
     except KeyboardInterrupt:
-        loop.run_until_complete(bot.stop())
+        if not _shutting_down:
+            loop.run_until_complete(bot.stop())
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        if not _shutting_down:
+            loop.run_until_complete(bot.stop())
     finally:
         loop.close()
 

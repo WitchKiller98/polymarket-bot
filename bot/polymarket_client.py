@@ -276,7 +276,7 @@ class PolymarketClient:
         question = (market.get("question") or "").upper()
         tags = [t.upper() for t in (market.get("tags") or [])]
         for asset in ("BTC", "ETH", "BITCOIN", "ETHEREUM"):
-            if asset in question or asset in tags:
+            if asset in question or any(asset in tag for tag in tags):
                 return "BTC" if asset in ("BTC", "BITCOIN") else "ETH"
         return None
 

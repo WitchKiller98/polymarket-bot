@@ -52,6 +52,7 @@ class ArbitrageBot:
         self._portfolio_usd: float = 0.0
         self._initial_paper_balance: float = 10_000.0
         self._running = False
+        self._shutdown_event = asyncio.Event()
         self._scan_interval = 2.0  # seconds between edge scans
 
     # ------------------------------------------------------------------
@@ -100,19 +101,34 @@ class ArbitrageBot:
         )
 
         self._running = True
+        self._shutdown_event.clear()
 
-        # Launch concurrent tasks – feed.run() is included directly so
-        # exceptions propagate properly via gather.
-        await asyncio.gather(
-            self._feed.run_forever(),
-            self._market_refresh_loop(),
-            self._scan_loop(),
-            self._heartbeat_loop(),
-            self._daily_reset_loop(),
-        )
+        # Launch concurrent tasks – create explicitly so we can cancel on error
+        tasks = [
+            asyncio.create_task(self._feed.run_forever(), name="price_feed"),
+            asyncio.create_task(self._market_refresh_loop(), name="market_refresh"),
+            asyncio.create_task(self._scan_loop(), name="scan"),
+            asyncio.create_task(self._heartbeat_loop(), name="heartbeat"),
+            asyncio.create_task(self._daily_reset_loop(), name="daily_reset"),
+        ]
+
+        try:
+            # If any task raises, cancel the rest and propagate
+            done, pending = await asyncio.wait(
+                tasks, return_when=asyncio.FIRST_EXCEPTION
+            )
+            # Check for exceptions in completed tasks
+            for t in done:
+                if t.exception() is not None:
+                    log.error("Task %s failed: %s", t.get_name(), t.exception())
+        finally:
+            for t in tasks:
+                t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def stop(self) -> None:
         self._running = False
+        self._shutdown_event.set()
         await self._feed.stop()
         if self._ledger:
             await self._ledger.close()
@@ -120,6 +136,19 @@ class ArbitrageBot:
         await self._notifier.alert("Bot Stopped", self._risk.summary() if self._risk else "")
         await self._notifier.close()
         log.info("Bot shut down cleanly")
+
+    # ------------------------------------------------------------------
+    # Interruptible sleep helper
+    # ------------------------------------------------------------------
+
+    async def _sleep(self, seconds: float) -> None:
+        """Sleep that wakes immediately on shutdown signal."""
+        try:
+            await asyncio.wait_for(
+                self._shutdown_event.wait(), timeout=seconds
+            )
+        except asyncio.TimeoutError:
+            pass  # Normal: timeout expired before shutdown
 
     # ------------------------------------------------------------------
     # Price callback
@@ -139,9 +168,9 @@ class ArbitrageBot:
             except Exception:
                 log.exception("Market refresh error")
                 await self._notifier.alert(
-                    "ERROR", "Market refresh failed – see logs."
+                    "ERROR", "Market refresh failed - see logs."
                 )
-            await asyncio.sleep(60)
+            await self._sleep(60)
 
     # ------------------------------------------------------------------
     # Core edge-scan loop
@@ -149,7 +178,7 @@ class ArbitrageBot:
 
     async def _scan_loop(self) -> None:
         # Wait a bit for initial data
-        await asyncio.sleep(5)
+        await self._sleep(5)
 
         while self._running:
             try:
@@ -157,9 +186,9 @@ class ArbitrageBot:
             except Exception:
                 log.exception("Scan loop error")
                 await self._notifier.alert(
-                    "ERROR", "Scan loop exception – see logs."
+                    "ERROR", "Scan loop exception - see logs."
                 )
-            await asyncio.sleep(self._scan_interval)
+            await self._sleep(self._scan_interval)
 
     async def _scan_once(self) -> None:
         assert self._risk is not None
@@ -247,7 +276,7 @@ class ArbitrageBot:
 
     async def _heartbeat_loop(self) -> None:
         while self._running:
-            await asyncio.sleep(self._cfg.heartbeat_interval_seconds)
+            await self._sleep(self._cfg.heartbeat_interval_seconds)
             if not self._running:
                 break
             try:
@@ -283,7 +312,7 @@ class ArbitrageBot:
                 hour=0, minute=0, second=0, microsecond=0
             )
             seconds_until = (tomorrow - now).total_seconds()
-            await asyncio.sleep(seconds_until)
+            await self._sleep(seconds_until)
 
             if not self._running or self._risk is None:
                 break

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from html import escape as _esc
 from typing import TYPE_CHECKING
 
 import aiohttp
@@ -65,8 +66,8 @@ class TelegramNotifier:
                 self._last_send = asyncio.get_running_loop().time()
 
     async def alert(self, title: str, body: str) -> None:
-        """Convenience wrapper that formats title + body."""
-        msg = f"<b>{title}</b>\n{body}"
+        """Convenience wrapper that formats title + body (HTML-escaped)."""
+        msg = f"<b>{_esc(title)}</b>\n{_esc(body)}"
         await self.send(msg)
 
     async def close(self) -> None:
