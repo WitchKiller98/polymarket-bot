@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
 Standalone Polymarket API credential generator.
-Uses only eth_account + requests — no py-clob-client needed.
+Uses only eth_account + stdlib — no py-clob-client or requests needed.
 
 Usage:
     python3 get_creds.py
 """
 
+import json
 import os
 import sys
 import time
+import urllib.request
 
-import requests
 from dotenv import load_dotenv
 from eth_account import Account
-from eth_account.messages import encode_typed_data
 
 load_dotenv()
 
@@ -70,8 +70,25 @@ def make_l1_headers(private_key: str) -> dict:
         "POLY-SIGNATURE": signature,
         "POLY-TIMESTAMP": timestamp,
         "POLY-NONCE":     str(nonce),
-        "Content-Type":  "application/json",
+        "Content-Type":   "application/json",
     }
+
+
+def post_json(url: str, headers: dict) -> tuple[int, dict]:
+    """POST with stdlib only — no requests/aiohttp needed."""
+    req = urllib.request.Request(
+        url,
+        data=b"{}",
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = json.loads(resp.read().decode())
+            return resp.status, body
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()
+        return e.code, {"error": body}
 
 
 def main():
@@ -80,20 +97,19 @@ def main():
     print(f"Address: {headers['POLY-ADDRESS']}")
 
     print("\nRequesting API credentials from Polymarket CLOB...")
-    resp = requests.post(f"{CLOB_HOST}/auth/api-key", headers=headers)
+    status, data = post_json(f"{CLOB_HOST}/auth/api-key", headers)
 
-    if resp.status_code == 200:
-        data = resp.json()
+    if status == 200 and "apiKey" in data:
         print("\n=== SUCCESS ===")
-        print(f"API Key:    {data.get('apiKey')}")
-        print(f"Secret:     {data.get('secret')}")
-        print(f"Passphrase: {data.get('passphrase')}")
+        print(f"API Key:    {data['apiKey']}")
+        print(f"Secret:     {data['secret']}")
+        print(f"Passphrase: {data['passphrase']}")
         print("\nAdd these to your .env:")
-        print(f"POLY_API_KEY={data.get('apiKey')}")
-        print(f"POLY_SECRET={data.get('secret')}")
-        print(f"POLY_PASSPHRASE={data.get('passphrase')}")
+        print(f"POLY_API_KEY={data['apiKey']}")
+        print(f"POLY_SECRET={data['secret']}")
+        print(f"POLY_PASSPHRASE={data['passphrase']}")
     else:
-        print(f"\nERROR {resp.status_code}: {resp.text}")
+        print(f"\nERROR {status}: {data}")
 
 
 if __name__ == "__main__":
