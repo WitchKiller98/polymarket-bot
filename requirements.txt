@@ -8,6 +8,9 @@ asyncio-throttle==1.0.2
 # with py-clob-client>=0.18 requiring eth-account>=0.13. eth_account is
 # used directly instead (pulled in as a py-clob-client dependency).
 py-clob-client==0.18.0
+# py-order-utils 0.3.2 on PyPI is missing the config module required by
+# py-clob-client 0.18.0 — install from GitHub source instead.
+py-order-utils @ git+https://github.com/polymarket/python-order-utils.git
 
 # Telegram
 python-telegram-bot==21.3
