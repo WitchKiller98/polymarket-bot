@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Standalone Polymarket API credential generator.
-Uses only eth_account + stdlib — no py-clob-client or requests needed.
+Manual EIP-712 signing — no py-clob-client/eip712-structs/pysha3 needed.
+Only uses: eth_account, eth_abi, eth_utils (all already installed).
 
 Usage:
     python3 get_creds.py
@@ -12,9 +13,12 @@ import os
 import sys
 import time
 import urllib.request
+import urllib.error
 
 from dotenv import load_dotenv
 from eth_account import Account
+from eth_abi import encode as abi_encode
+from eth_utils import keccak
 
 load_dotenv()
 
@@ -25,99 +29,124 @@ CHAIN_ID    = 137  # Polygon mainnet
 if not PRIVATE_KEY:
     sys.exit("ERROR: POLY_PRIVATE_KEY not set in .env")
 
+# ---- EIP-712 constants ----
 
-def make_l1_headers(private_key: str) -> dict:
-    """Build Polymarket L1 auth headers using EIP-712 signing."""
+DOMAIN_TYPEHASH = keccak(b"EIP712Domain(string name,string version,uint256 chainId)")
+CLOB_AUTH_TYPEHASH = keccak(b"ClobAuth(string address,string timestamp,uint256 nonce,string message)")
+
+DOMAIN_SEPARATOR = keccak(abi_encode(
+    ["bytes32", "bytes32", "bytes32", "uint256"],
+    [DOMAIN_TYPEHASH, keccak(b"ClobAuthDomain"), keccak(b"1"), CHAIN_ID],
+))
+
+MSG_TEXT = "This message attests that I control the given wallet"
+
+
+def sign_clob_auth(private_key: str) -> tuple[str, str, str, str]:
+    """Sign a ClobAuth EIP-712 message. Returns (address, sig, timestamp, nonce)."""
     acct      = Account.from_key(private_key)
     address   = acct.address
     timestamp = str(int(time.time()))
     nonce     = 0
-    message   = "This message attests that I control the given wallet"
 
-    typed_data = {
-        "domain": {
-            "name":    "ClobAuthDomain",
-            "version": "1",
-            "chainId": CHAIN_ID,
-        },
-        "types": {
-            "EIP712Domain": [
-                {"name": "name",    "type": "string"},
-                {"name": "version", "type": "string"},
-                {"name": "chainId", "type": "uint256"},
-            ],
-            "ClobAuth": [
-                {"name": "address",   "type": "string"},
-                {"name": "timestamp", "type": "string"},
-                {"name": "nonce",     "type": "uint256"},
-                {"name": "message",   "type": "string"},
-            ],
-        },
-        "primaryType": "ClobAuth",
-        "message": {
-            "address":   address,
-            "timestamp": timestamp,
-            "nonce":     nonce,
-            "message":   message,
-        },
-    }
+    # hashStruct(ClobAuth)
+    struct_hash = keccak(abi_encode(
+        ["bytes32", "bytes32", "bytes32", "uint256", "bytes32"],
+        [
+            CLOB_AUTH_TYPEHASH,
+            keccak(address.encode()),
+            keccak(timestamp.encode()),
+            nonce,
+            keccak(MSG_TEXT.encode()),
+        ],
+    ))
 
-    signed    = Account.sign_typed_data(acct.key, full_message=typed_data)
-    sig_hex   = "0x" + signed.signature.hex()
+    # EIP-712: \x19\x01 ‖ domainSeparator ‖ hashStruct
+    digest = keccak(b"\x19\x01" + DOMAIN_SEPARATOR + struct_hash)
 
-    # Debug: print what we're sending so we can diagnose issues
-    print(f"  timestamp: {timestamp}")
-    print(f"  nonce:     {nonce}")
-    print(f"  sig len:   {len(sig_hex)} chars")
-    print(f"  sig start: {sig_hex[:20]}...")
+    signed  = Account.unsafe_sign_hash(digest, acct.key)
+    sig_hex = "0x" + signed.signature.hex()
 
-    return {
-        "POLY-ADDRESS":   address,
-        "POLY-SIGNATURE": sig_hex,
-        "POLY-TIMESTAMP": timestamp,
-        "POLY-NONCE":     str(nonce),
-        "Content-Type":   "application/json",
-    }
+    return address, sig_hex, timestamp, str(nonce)
 
 
 def post_json(url: str, headers: dict) -> tuple[int, dict]:
-    """POST with stdlib only — no requests/aiohttp needed."""
-    headers["User-Agent"] = "Mozilla/5.0 (X11; Linux x86_64) polymarket-bot/0.1"
+    """POST with stdlib urllib."""
+    headers["User-Agent"] = "Mozilla/5.0 polymarket-bot/0.1"
     headers["Accept"]     = "application/json"
-    req = urllib.request.Request(
-        url,
-        data=b"{}",
-        headers=headers,
-        method="POST",
-    )
+    req = urllib.request.Request(url, data=b"{}", headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
-            body = json.loads(resp.read().decode())
-            return resp.status, body
+            return resp.status, json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
-        body = e.read().decode()
-        return e.code, {"error": body}
+        return e.code, {"error": e.read().decode()}
+
+
+def get_json(url: str, headers: dict) -> tuple[int, dict]:
+    """GET with stdlib urllib."""
+    headers["User-Agent"] = "Mozilla/5.0 polymarket-bot/0.1"
+    headers["Accept"]     = "application/json"
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return resp.status, json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        return e.code, {"error": e.read().decode()}
 
 
 def main():
-    print("Generating L1 auth headers...")
-    headers = make_l1_headers(PRIVATE_KEY)
-    print(f"Address: {headers['POLY-ADDRESS']}")
+    print("Signing EIP-712 ClobAuth message...")
+    address, signature, timestamp, nonce = sign_clob_auth(PRIVATE_KEY)
 
-    print("\nRequesting API credentials from Polymarket CLOB...")
-    status, data = post_json(f"{CLOB_HOST}/auth/api-key", headers)
+    print(f"  Address:   {address}")
+    print(f"  Timestamp: {timestamp}")
+    print(f"  Sig len:   {len(signature)}")
+    print(f"  Sig:       {signature[:20]}...{signature[-8:]}")
+
+    headers = {
+        "POLY-ADDRESS":   address,
+        "POLY-SIGNATURE": signature,
+        "POLY-TIMESTAMP": timestamp,
+        "POLY-NONCE":     nonce,
+        "Content-Type":   "application/json",
+    }
+
+    # Try creating new credentials first
+    print("\n1) Trying POST /auth/api-key (create new)...")
+    status, data = post_json(f"{CLOB_HOST}/auth/api-key", dict(headers))
+    print(f"   Status: {status}")
 
     if status == 200 and "apiKey" in data:
-        print("\n=== SUCCESS ===")
-        print(f"API Key:    {data['apiKey']}")
-        print(f"Secret:     {data['secret']}")
-        print(f"Passphrase: {data['passphrase']}")
-        print("\nAdd these to your .env:")
-        print(f"POLY_API_KEY={data['apiKey']}")
-        print(f"POLY_SECRET={data['secret']}")
-        print(f"POLY_PASSPHRASE={data['passphrase']}")
-    else:
-        print(f"\nERROR {status}: {data}")
+        print_creds(data)
+        return
+
+    print(f"   Response: {data}")
+
+    # Fall back to deriving existing credentials
+    print("\n2) Trying GET /auth/derive-api-key (derive existing)...")
+    status, data = get_json(f"{CLOB_HOST}/auth/derive-api-key", dict(headers))
+    print(f"   Status: {status}")
+
+    if status == 200 and "apiKey" in data:
+        print_creds(data)
+        return
+
+    print(f"   Response: {data}")
+    print("\nBoth methods failed. Check that your POLY_PRIVATE_KEY is correct.")
+
+
+def print_creds(data: dict):
+    api_key    = data.get("apiKey", "")
+    secret     = data.get("secret", "")
+    passphrase = data.get("passphrase", "")
+    print("\n=== SUCCESS ===")
+    print(f"API Key:    {api_key}")
+    print(f"Secret:     {secret}")
+    print(f"Passphrase: {passphrase}")
+    print("\nAdd these to your .env:")
+    print(f"POLY_API_KEY={api_key}")
+    print(f"POLY_SECRET={secret}")
+    print(f"POLY_PASSPHRASE={passphrase}")
 
 
 if __name__ == "__main__":
