@@ -63,11 +63,17 @@ def make_l1_headers(private_key: str) -> dict:
     }
 
     signed    = Account.sign_typed_data(acct.key, full_message=typed_data)
-    signature = signed.signature.hex()
+    sig_hex   = "0x" + signed.signature.hex()
+
+    # Debug: print what we're sending so we can diagnose issues
+    print(f"  timestamp: {timestamp}")
+    print(f"  nonce:     {nonce}")
+    print(f"  sig len:   {len(sig_hex)} chars")
+    print(f"  sig start: {sig_hex[:20]}...")
 
     return {
         "POLY-ADDRESS":   address,
-        "POLY-SIGNATURE": signature,
+        "POLY-SIGNATURE": sig_hex,
         "POLY-TIMESTAMP": timestamp,
         "POLY-NONCE":     str(nonce),
         "Content-Type":   "application/json",
