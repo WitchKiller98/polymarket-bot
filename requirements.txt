@@ -7,7 +7,9 @@ asyncio-throttle==1.0.2
 # web3 removed: all 6.x versions require eth-account<0.13 which conflicts
 # with py-clob-client>=0.18 requiring eth-account>=0.13. eth_account is
 # used directly instead (pulled in as a py-clob-client dependency).
-py-clob-client==0.18.0
+# 0.18.0 references py_order_utils.config which doesn't exist in any
+# public release of py-order-utils. Use the latest working version.
+py-clob-client>=0.10.0,<0.18.0
 
 # Telegram
 python-telegram-bot==21.3
