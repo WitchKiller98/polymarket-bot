@@ -236,10 +236,9 @@ class PolymarketClient:
         # here – for production the web3 library handles it).  We keep a
         # lightweight RPC call approach.
         try:
-            from web3 import Web3
+            from eth_account import Account
 
-            w3 = Web3()
-            acct = w3.eth.account.from_key(self._private_key)
+            acct = Account.from_key(self._private_key)
             address = acct.address
         except Exception:
             log.exception("Cannot derive address from private key")
